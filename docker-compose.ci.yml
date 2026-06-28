@@ -1,0 +1,39 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: novabit_test
+      POSTGRES_PASSWORD: novabit_test_secret
+      POSTGRES_DB: novabit_test_db
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U novabit_test']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    environment:
+      DATABASE_URL: postgresql://novabit_test:novabit_test_secret@postgres:5432/novabit_test_db?schema=public
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: test
+      JWT_SECRET: test_secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: npm test
