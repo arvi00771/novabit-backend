@@ -9,6 +9,7 @@
 import pg from 'pg';
 import { Redis } from 'ioredis';
 import type { Redis as RedisType } from 'ioredis';
+import { EventEmitter } from 'events';
 import { config } from '../config/index.js';
 
 // ── PostgreSQL Pool ─────────────────────────────
@@ -29,6 +30,16 @@ export function createPostgresPool(): pg.Pool {
 
 // ── Redis Client ────────────────────────────────
 export function createRedisClient(): RedisType {
+  // If no Redis is configured, return a mock
+  if (!config.REDIS_URL || config.REDIS_URL === 'redis://localhost:6379') {
+    console.warn('[Redis] No REDIS_URL configured, using in-memory mock');
+    const mock = new EventEmitter() as unknown as RedisType;
+    (mock as any).ping = async () => 'PONG';
+    (mock as any).quit = async () => 'OK';
+    (mock as any).on = () => mock;
+    return mock;
+  }
+
   const client = new Redis(config.REDIS_URL, {
     maxRetriesPerRequest: 3,
     retryStrategy(times: number) {
