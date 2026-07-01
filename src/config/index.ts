@@ -23,7 +23,7 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(16).default('novabit-dev-jwt-secret-min-32-chars!!'),
 
   // CORS
-  CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  CORS_ORIGIN: z.string().default('http://localhost:5173,https://novabit-frontend1.onrender.com,https://novabit.exchange'),
 
   // Rate Limiting
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
