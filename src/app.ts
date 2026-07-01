@@ -31,9 +31,17 @@ async function buildApp() {
 
   // ── Global middleware & plugins ────────────
 
-  // CORS — allow frontend origin
+  // CORS — allow frontend origins
+  const allowedOrigins = [
+    ...config.CORS_ORIGIN.split(',').map((o) => o.trim()),
+    'https://novabit.exchange',
+    'https://novabit-frontend1.onrender.com',
+  ];
   await app.register(import('@fastify/cors'), {
-    origin: config.CORS_ORIGIN.split(',').map((o) => o.trim()),
+    origin: (origin: string) => {
+      if (!origin) return true;
+      return allowedOrigins.includes(origin);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
