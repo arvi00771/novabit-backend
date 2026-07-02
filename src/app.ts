@@ -38,14 +38,11 @@ async function buildApp() {
     'https://novabit-frontend1.onrender.com',
   ];
   await app.register(import('@fastify/cors'), {
-    origin: (origin: string | undefined) => {
-      if (!origin) return true;
-      return allowedOrigins.includes(origin);
-    },
+    origin: allowedOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
-  });
+  } as any);
 
   // Security headers
   await app.register(import('@fastify/helmet'), {
