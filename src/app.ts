@@ -31,18 +31,13 @@ async function buildApp() {
 
   // ── Global middleware & plugins ────────────
 
-  // CORS — allow frontend origins
-  const allowedOrigins = [
-    ...config.CORS_ORIGIN.split(',').map((o) => o.trim()),
-    'https://novabit.exchange',
-    'https://novabit-frontend1.onrender.com',
-  ];
+  // CORS — allow frontend origin
   await app.register(import('@fastify/cors'), {
-    origin: allowedOrigins,
+    origin: config.CORS_ORIGIN.split(',').map((o) => o.trim()),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
-  } as any);
+  });
 
   // Security headers
   await app.register(import('@fastify/helmet'), {
