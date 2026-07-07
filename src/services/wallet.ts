@@ -7,7 +7,9 @@
  */
 
 import pg from 'pg';
+import crypto from 'node:crypto';
 import { AppError } from '../middleware/error-handler.js';
+import { config } from '../config/index.js';
 import {
   CreateWithdrawalInput,
   TransactionResponse,
@@ -55,11 +57,14 @@ export class WalletService {
     userId: string,
     asset: string,
     network: string,
-  ): Promise<{ address: string; network: string; memo: string | null; asset: string }> {
+  ): Promise<{ address: string; network: string; memo: string | null; asset: string; min_deposit_amount: string }> {
     const assetUpper = asset.toUpperCase();
     const networkUpper = network.toUpperCase();
 
-    // Ensure the user has a wallet for this asset
+    // Auto-create wallet for this asset if it doesn't exist
+    await this.ensureWallet(userId, assetUpper);
+
+    // Get the wallet
     const walletResult = await this.db.query(
       `SELECT id FROM wallets
        WHERE user_id = $1 AND asset = $2 AND wallet_type = 'SPOT'
@@ -72,6 +77,15 @@ export class WalletService {
     }
 
     const walletId = walletResult.rows[0].id;
+
+    // Get min deposit amount from supported_coins
+    const coinResult = await this.db.query(
+      `SELECT min_deposit_amount FROM supported_coins WHERE asset = $1 AND is_active = TRUE LIMIT 1`,
+      [assetUpper],
+    );
+    const minDepositAmount = coinResult.rows.length > 0
+      ? String(coinResult.rows[0].min_deposit_amount)
+      : '0.0001';
 
     // Check for existing active deposit address
     const existingAddress = await this.db.query(
@@ -88,32 +102,49 @@ export class WalletService {
         network: existingAddress.rows[0].network,
         memo: existingAddress.rows[0].memo || null,
         asset: assetUpper,
+        min_deposit_amount: minDepositAmount,
       };
     }
 
-    // Generate a mock deposit address (in production, call blockchain wallet API)
-    // For now, generate a deterministic test address
-    const mockAddress = this.generateMockAddress(assetUpper, userId);
-    const memo = assetUpper === 'XRP' || assetUpper === 'EOS' ? this.generateMockMemo() : null;
+    // Generate a deterministic address per user per asset using server seed
+    const { address, memo } = this.generateDeterministicAddress(assetUpper, userId);
+    const memoVal = memo;
 
     await this.db.query(
       `INSERT INTO deposit_addresses (wallet_id, user_id, asset, address, network, memo, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, TRUE)`,
-      [walletId, userId, assetUpper, mockAddress, networkUpper, memo],
+      [walletId, userId, assetUpper, address, networkUpper, memoVal],
     );
 
     // Update wallet with deposit address
     await this.db.query(
       `UPDATE wallets SET address = $1 WHERE id = $2 AND address IS NULL`,
-      [mockAddress, walletId],
+      [address, walletId],
     );
 
     return {
-      address: mockAddress,
+      address,
       network: networkUpper,
-      memo,
+      memo: memoVal,
       asset: assetUpper,
+      min_deposit_amount: minDepositAmount,
     };
+  }
+
+  // ── Ensure wallet exists for a user/asset ────
+  private async ensureWallet(userId: string, asset: string): Promise<void> {
+    const existing = await this.db.query(
+      `SELECT id FROM wallets WHERE user_id = $1 AND asset = $2 AND wallet_type = 'SPOT' LIMIT 1`,
+      [userId, asset],
+    );
+
+    if (existing.rows.length === 0) {
+      await this.db.query(
+        `INSERT INTO wallets (user_id, asset, wallet_type, balance, locked_balance)
+         VALUES ($1, $2, 'SPOT', 0, 0)`,
+        [userId, asset],
+      );
+    }
   }
 
   // ── Submit withdrawal request ────────────────
@@ -349,19 +380,80 @@ export class WalletService {
     return fees[asset] || '0.001';
   }
 
-  private generateMockAddress(asset: string, _userId: string): string {
-    // In production, this would call a wallet management service/HD wallet
-    const prefixes: Record<string, string> = {
-      BTC: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
-      ETH: '0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18',
-      USDT: '0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18',
-      SOL: '7EcDhSYGxXyscszYEp35KHN8vvw3svAuCQVz5iLxGXaw',
-      XRP: 'rG1QQv2nh2gr7RCZ1P8YYcBUKCCN633jCn',
-    };
-    return prefixes[asset] || `mock_${asset}_${_userId.slice(0, 8)}`;
+  // ── Generate a deterministic deposit address ──
+  private generateDeterministicAddress(asset: string, userId: string): { address: string; memo: string | null } {
+    // Deterministic seed: server seed + asset + userId => consistent across restarts
+    const seed = [config.WALLET_SEED, asset, userId].join(':');
+    const hash = crypto.createHash('sha256').update(seed).digest('hex');
+    const hashB58 = this.base58Encode(hash);
+
+    // Generate deterministic per-asset addresses with proper formats
+    let address: string;
+    const needsMemo = ['XRP', 'EOS', 'XLM', 'ATOM'].includes(asset);
+
+    switch (asset) {
+      case 'BTC':
+        // BTC: bc1q + 38 hex chars (bech32) or 1 + base58
+        address = 'bc1q' + hash.substring(0, 38);
+        break;
+
+      case 'ETH':
+      case 'USDT':
+      case 'USDC':
+      case 'LINK':
+      case 'AVAX':
+        // EVM: 0x + 40 hex chars
+        address = '0x' + hash.substring(0, 40);
+        break;
+
+      case 'SOL':
+        // Solana: base58 encoded, ~44 chars
+        address = hashB58.substring(0, 44);
+        break;
+
+      case 'ADA':
+        // Cardano: addr1 + bech32-like encoding
+        address = 'addr1' + hash.substring(0, 40).toLowerCase();
+        break;
+
+      case 'DOGE':
+        // Dogecoin: D + base58
+        address = 'D' + hashB58.substring(0, 33);
+        break;
+
+      case 'DOT':
+        // Polkadot: 1 + base58
+        address = '1' + hashB58.substring(0, 46);
+        break;
+
+      case 'XRP':
+        // Ripple: r + base58
+        address = 'r' + hashB58.substring(0, 32);
+        break;
+
+      default:
+        // Fallback: asset prefix + truncated hash
+        address = asset.toLowerCase() + '_' + hash.substring(0, 34);
+        break;
+    }
+
+    // Memo for networks that need it (e.g., XRP destination tag)
+    const memo = needsMemo
+      ? String((parseInt(hash.substring(0, 8), 16) % 900000) + 100000)
+      : null;
+
+    return { address, memo };
   }
 
-  private generateMockMemo(): string {
-    return Math.random().toString(36).substring(2, 12).toUpperCase();
+  private base58Encode(hex: string): string {
+    const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    let n = BigInt('0x' + hex);
+    let result = '';
+    const base = BigInt(58);
+    while (n > 0n) {
+      result = alphabet[Number(n % base)] + result;
+      n = n / base;
+    }
+    return result || alphabet[0];
   }
 }

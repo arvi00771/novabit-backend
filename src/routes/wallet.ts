@@ -106,7 +106,13 @@ export default async function walletRoutes(fastify: FastifyInstance) {
 
       return reply.send({
         success: true,
-        data: depositInfo,
+        data: {
+          address: depositInfo.address,
+          network: depositInfo.network,
+          memo: depositInfo.memo,
+          asset: depositInfo.asset,
+          min_deposit_amount: depositInfo.min_deposit_amount,
+        },
         timestamp: Date.now(),
       });
     },
