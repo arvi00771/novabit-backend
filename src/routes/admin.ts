@@ -9,6 +9,8 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { DepositService } from '../services/deposit.js';
 import { StakingService } from '../services/staking.js';
+import { KYCService } from '../services/kyc.js';
+import { AuditService } from '../services/audit.js';
 import { getDb } from '../db/index.js';
 import { requireRole } from '../middleware/auth-guard.js';
 import { z } from 'zod';
@@ -16,6 +18,9 @@ import {
   CreateStakingProductSchema,
   UpdateStakingProductSchema,
 } from '../schemas/staking.js';
+import {
+  KYCRejectSchema,
+} from '../schemas/kyc.js';
 
 const RejectSchema = z.object({
   reason: z.string().max(500).optional(),
@@ -24,6 +29,8 @@ const RejectSchema = z.object({
 export default async function adminRoutes(fastify: FastifyInstance) {
   const depositService = new DepositService(getDb());
   const stakingService = new StakingService(getDb());
+  const kycService = new KYCService(getDb());
+  const auditService = new AuditService(getDb());
 
   // Require auth + ADMIN role on all admin routes
   fastify.addHook('preHandler', fastify.authenticate);
@@ -133,4 +140,65 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       timestamp: Date.now(),
     });
   });
+
+  // ══════════════════════════════════════════════
+  // ADMIN KYC ENDPOINTS
+  // ══════════════════════════════════════════════
+
+  // ── GET /admin/kyc/pending — List pending KYC submissions ──
+  fastify.get('/admin/kyc/pending', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = request.query as { limit?: string; offset?: string };
+    const limit = Math.min(parseInt(query.limit || '20', 10), 100);
+    const offset = parseInt(query.offset || '0', 10);
+
+    const result = await kycService.listPendingKYC({ limit, offset });
+
+    return reply.send({
+      success: true,
+      data: result.submissions,
+      meta: { total: result.total, limit, offset },
+      timestamp: Date.now(),
+    });
+  });
+
+  // ── POST /admin/kyc/:userId/approve — Approve KYC ──
+  fastify.post(
+    '/admin/kyc/:userId/approve',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const adminId = (request.user as any).id;
+      const { userId } = request.params as { userId: string };
+
+      const result = await kycService.approveKYC(userId, adminId);
+
+      // Audit log
+      await auditService.logKYCApproval(userId, adminId, request.ip);
+
+      return reply.send({
+        success: true,
+        data: result,
+        timestamp: Date.now(),
+      });
+    },
+  );
+
+  // ── POST /admin/kyc/:userId/reject — Reject KYC ──
+  fastify.post(
+    '/admin/kyc/:userId/reject',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const adminId = (request.user as any).id;
+      const { userId } = request.params as { userId: string };
+      const body = KYCRejectSchema.parse(request.body);
+
+      const result = await kycService.rejectKYC(userId, adminId, body.reason);
+
+      // Audit log
+      await auditService.logKYCRejection(userId, adminId, body.reason, request.ip);
+
+      return reply.send({
+        success: true,
+        data: result,
+        timestamp: Date.now(),
+      });
+    },
+  );
 }
