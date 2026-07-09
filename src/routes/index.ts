@@ -24,4 +24,7 @@ export default async function registerRoutes(fastify: FastifyInstance) {
 
   // Admin routes — withdrawal queue, user management
   await fastify.register(import('./admin.js'), { prefix: '/api/v1' });
+
+  // Staking routes — products, stakes, rewards
+  await fastify.register(import('./staking.js'), { prefix: '/api/v1' });
 }
