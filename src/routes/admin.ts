@@ -201,4 +201,167 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       });
     },
   );
+
+  // ══════════════════════════════════════════════
+  // ADMIN DASHBOARD & USER MANAGEMENT
+  // ══════════════════════════════════════════════
+
+  // ── GET /admin/dashboard — Stats overview ────
+  fastify.get('/admin/dashboard', async (_request: FastifyRequest, reply: FastifyReply) => {
+    const db = getDb();
+
+    const [
+      totalUsers,
+      verifiedUsers,
+      pendingKyc,
+      deposits24h,
+      withdrawals24h,
+      tradingVolume24h,
+      activeUsers24h,
+      pendingWithdrawals,
+      totalStaked,
+      totalStakers,
+    ] = await Promise.all([
+      db.query(`SELECT COUNT(*) as count FROM users`),
+      db.query(`SELECT COUNT(*) as count FROM users WHERE kyc_status = 'VERIFIED'`),
+      db.query(`SELECT COUNT(*) as count FROM users WHERE kyc_status = 'PENDING'`),
+      db.query(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM deposits
+         WHERE status = 'COMPLETED' AND created_at > NOW() - INTERVAL '24 hours'`,
+      ),
+      db.query(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM withdrawals
+         WHERE status IN ('COMPLETED', 'APPROVED') AND created_at > NOW() - INTERVAL '24 hours'`,
+      ),
+      db.query(
+        `SELECT COALESCE(SUM(quote_quantity), 0) as total FROM trades
+         WHERE trade_time > NOW() - INTERVAL '24 hours'`,
+      ),
+      db.query(
+        `SELECT COUNT(DISTINCT u.id) as count FROM users u
+         WHERE u.last_login_at > NOW() - INTERVAL '24 hours'
+            OR u.id IN (SELECT DISTINCT user_id FROM trades WHERE trade_time > NOW() - INTERVAL '24 hours')`,
+      ),
+      db.query(`SELECT COUNT(*) as count FROM withdrawals WHERE status = 'PENDING'`),
+      db.query(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM stakes WHERE status = 'ACTIVE'`,
+      ),
+      db.query(
+        `SELECT COUNT(DISTINCT user_id) as count FROM stakes WHERE status = 'ACTIVE'`,
+      ),
+    ]);
+
+    return reply.send({
+      success: true,
+      data: {
+        total_users: parseInt(totalUsers.rows[0].count, 10),
+        verified_users: parseInt(verifiedUsers.rows[0].count, 10),
+        pending_kyc: parseInt(pendingKyc.rows[0].count, 10),
+        total_deposits_24h: String(deposits24h.rows[0].total),
+        total_withdrawals_24h: String(withdrawals24h.rows[0].total),
+        total_trading_volume_24h: String(tradingVolume24h.rows[0].total),
+        active_users_24h: parseInt(activeUsers24h.rows[0].count, 10),
+        pending_withdrawals: parseInt(pendingWithdrawals.rows[0].count, 10),
+        total_staked: String(totalStaked.rows[0].total),
+        total_stakers: parseInt(totalStakers.rows[0].count, 10),
+      },
+      timestamp: Date.now(),
+    });
+  });
+
+  // ── GET /admin/users — List users ────────────
+  fastify.get('/admin/users', async (request: FastifyRequest, reply: FastifyReply) => {
+    const query = request.query as { limit?: string; offset?: string; search?: string };
+    const limit = Math.min(parseInt(query.limit || '20', 10), 100);
+    const offset = parseInt(query.offset || '0', 10);
+    const search = query.search || '';
+
+    const db = getDb();
+
+    let countQuery: string;
+    let dataQuery: string;
+    const params: unknown[] = [];
+
+    if (search) {
+      countQuery = `SELECT COUNT(*) FROM users WHERE email ILIKE $1`;
+      dataQuery = `
+        SELECT id, email, role, kyc_status, is_active, is_2fa_enabled,
+               last_login_at, created_at
+        FROM users
+        WHERE email ILIKE $1
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+      `;
+      params.push(`%${search}%`, limit, offset);
+    } else {
+      countQuery = `SELECT COUNT(*) FROM users`;
+      dataQuery = `
+        SELECT id, email, role, kyc_status, is_active, is_2fa_enabled,
+               last_login_at, created_at
+        FROM users
+        ORDER BY created_at DESC
+        LIMIT $1 OFFSET $2
+      `;
+      params.push(limit, offset);
+    }
+
+    const countResult = await db.query(countQuery, search ? [`%${search}%`] : []);
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    const usersResult = await db.query(dataQuery, params);
+
+    return reply.send({
+      success: true,
+      data: usersResult.rows.map((r: Record<string, unknown>) => ({
+        id: r.id,
+        email: r.email,
+        role: r.role,
+        kyc_status: r.kyc_status,
+        is_active: r.is_active,
+        is_2fa_enabled: r.is_2fa_enabled,
+        last_login_at: r.last_login_at ? (r.last_login_at as Date).toISOString() : null,
+        created_at: (r.created_at as Date).toISOString(),
+      })),
+      meta: { total, limit, offset, search },
+      timestamp: Date.now(),
+    });
+  });
+
+  // ── POST /admin/users/:userId/toggle-active ──
+  fastify.post(
+    '/admin/users/:userId/toggle-active',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { userId } = request.params as { userId: string };
+
+      const db = getDb();
+      const userResult = await db.query(
+        `SELECT id, is_active FROM users WHERE id = $1`,
+        [userId],
+      );
+
+      if (userResult.rows.length === 0) {
+        return reply.status(404).send({
+          success: false,
+          error: { code: 'USER_NOT_FOUND', message: 'User not found' },
+          timestamp: Date.now(),
+        });
+      }
+
+      const currentStatus = userResult.rows[0].is_active;
+      await db.query(
+        `UPDATE users SET is_active = $1, updated_at = NOW() WHERE id = $2`,
+        [!currentStatus, userId],
+      );
+
+      return reply.send({
+        success: true,
+        data: {
+          user_id: userId,
+          is_active: !currentStatus,
+          message: `User ${!currentStatus ? 'enabled' : 'disabled'} successfully`,
+        },
+        timestamp: Date.now(),
+      });
+    },
+  );
 }
