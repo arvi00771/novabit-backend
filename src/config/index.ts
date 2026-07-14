@@ -9,7 +9,7 @@ import { z } from 'zod';
 
 const envSchema = z.object({
   // Server
-  NODE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
+  NODE_ENV: z.enum(['development', 'staging', 'production', 'test']).default('development'),
   HOST: z.string().default('0.0.0.0'),
   PORT: z.coerce.number().int().positive().default(3000),
 
@@ -31,6 +31,9 @@ const envSchema = z.object({
 
   // Logging
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+
+  // Wallet address generation
+  WALLET_SEED: z.string().min(8).default('novabit-seed-change-in-production!!'),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;
