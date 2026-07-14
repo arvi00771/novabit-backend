@@ -30,4 +30,7 @@ export default async function registerRoutes(fastify: FastifyInstance) {
 
   // KYC routes — compliance verification
   await fastify.register(import('./kyc.js'), { prefix: '/api/v1' });
+
+  // WebSocket routes — real-time market data (no /api/v1 prefix)
+  await fastify.register(import('./ws.js'));
 }
