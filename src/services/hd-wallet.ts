@@ -33,6 +33,12 @@ function pathFor(asset: string, index: number): string {
   if (coin === undefined) throw new Error(`Unsupported HD wallet asset: ${asset}`);
   return `m/44'/${coin}'/0'/0/${index}`;
 }
+// ed25519-hd-key requires every segment to be hardened (end with ')
+function ed25519Path(asset: string, index: number): string {
+  const coin = COIN_TYPES[asset] ?? COIN_TYPES[asset.toUpperCase()];
+  if (coin === undefined) throw new Error(`Unsupported HD wallet asset: ${asset}`);
+  return `m/44'/${coin}'/0'/0'/${index}'`;
+}
 function seed(): Buffer {
   if (!validateMnemonic(config.WALLET_SEED)) throw new Error('WALLET_SEED must be a valid BIP39 mnemonic');
   return mnemonicToSeedSync(config.WALLET_SEED);
@@ -52,8 +58,9 @@ export async function deriveDepositAddress(assetInput: string, _network: string,
   } else if (['ETH', 'ERC20', 'USDT', 'USDC', 'BSC', 'BEP20'].includes(asset)) {
     address = HDNodeWallet.fromPhrase(mnemonic, undefined, path).address;
   } else if (asset === 'SOL') {
-    const derived = derivePath(path, rawSeed.toString('hex'));
-    address = Keypair.fromSeed(derived.key).publicKey.toBase58();
+        const edPath = ed25519Path(asset, index);
+        const derived = derivePath(edPath, rawSeed.toString('hex'));
+        address = Keypair.fromSeed(derived.key).publicKey.toBase58();
   } else if (asset === 'TRX' || asset === 'TRC20') {
     // Tron uses secp256k1 and the same BIP44 private key as Ethereum, but a Base58Check prefix.
     const node = bip32.fromSeed(rawSeed).derivePath(path);
@@ -65,8 +72,9 @@ export async function deriveDepositAddress(assetInput: string, _network: string,
     const keyring = new Keyring({ type: 'sr25519', ss58Format: 0 });
     address = keyring.addFromUri(`${mnemonic}//${index}`).address;
   } else if (asset === 'ADA') {
-    // Shelley enterprise address: network id 1 (mainnet) and key-hash payload.
-    const derived = derivePath(path, rawSeed.toString('hex'));
+        // Shelley enterprise address: network id 1 (mainnet) and key-hash payload.
+        const edPath = ed25519Path(asset, index);
+        const derived = derivePath(edPath, rawSeed.toString('hex'));
     const hash = (await import('node:crypto')).createHash('blake2b512').update(derived.key).digest().subarray(0, 28);
     address = bech32.encode('addr', bech32.toWords(Buffer.concat([Buffer.from([0x61]), hash])));
   } else {
