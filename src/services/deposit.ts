@@ -9,8 +9,8 @@
  */
 
 import pg from 'pg';
-import crypto from 'node:crypto';
 import { AppError } from '../middleware/error-handler.js';
+import { deriveDepositAddress } from './hd-wallet.js';
 import {
   DepositInfoResponse,
   SupportedCoinResponse,
@@ -71,12 +71,12 @@ export class DepositService {
     }
 
     // Generate unique deposit address per user per coin
-    const { address, memo } = this.generateDepositAddress(assetUpper, networkVal, userId);
+    const { address, memo, derivationPath } = await deriveDepositAddress(assetUpper, networkVal, userId);
 
     await this.db.query(
-      `INSERT INTO deposit_addresses (wallet_id, user_id, asset, address, network, memo, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6, TRUE)`,
-      [walletId, userId, assetUpper, address, networkVal, memo],
+      `INSERT INTO deposit_addresses (wallet_id, user_id, asset, address, network, memo, derivation_path, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)`,
+      [walletId, userId, assetUpper, address, networkVal, memo, derivationPath],
     );
 
     // Update wallet with deposit address
@@ -284,30 +284,6 @@ export class DepositService {
     }
   }
 
-  private generateDepositAddress(asset: string, network: string, userId: string): { address: string; memo: string | null } {
-    // In production, this would derive from an HD wallet seed
-    // For dev, generate deterministic unique addresses per user
-    const hash = crypto.createHash('sha256').update(`${asset}:${userId}:novabit`).digest('hex');
-
-    const prefixes: Record<string, string> = {
-      BTC: 'bc1q',
-      ETH: '0x',
-      ERC20: '0x',
-      SOL: '',
-      ADA: 'addr1',
-      XRP: 'r',
-      DOT: '1',
-    };
-
-    const prefix = prefixes[asset] || prefixes[network] || '';
-    const address = `${prefix}${hash.substring(0, 34)}`;
-
-    // Some networks require a memo/destination tag
-    const needsMemo = ['XRP', 'EOS', 'XLM', 'ATOM'].includes(asset);
-    const memo = needsMemo ? crypto.randomInt(100000, 999999).toString() : null;
-
-    return { address, memo };
-  }
 }
 
 /**
