@@ -88,7 +88,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
       // Generate access token (JWT) using Fastify's JWT
       const accessToken = fastify.jwt.sign(
         {
-          userId: verified.id,
+          id: verified.id,
           role: verified.role,
         },
         { expiresIn: '15m' },
@@ -144,7 +144,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
       // Generate new access token
       const accessToken = fastify.jwt.sign(
         {
-          userId: validated.userId,
+          id: validated.userId,
           role: validated.role,
         },
         { expiresIn: '15m' },
