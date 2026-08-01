@@ -31,7 +31,7 @@ export function createPostgresPool(): pg.Pool {
 // ── Redis Client ────────────────────────────────
 export function createRedisClient(): RedisType {
   // If no Redis is configured, return a mock
-  if (!config.REDIS_URL || config.REDIS_URL === 'redis://localhost:6379') {
+  if (!config.REDIS_URL) {
     console.warn('[Redis] No REDIS_URL configured, using in-memory mock');
     const mock = new EventEmitter() as unknown as RedisType;
     (mock as any).ping = async () => 'PONG';
