@@ -26,7 +26,7 @@ async function buildApp() {
       }),
     },
     trustProxy: true,
-    bodyLimit: 1_048_576, // 1MB
+    bodyLimit: 50_000_000, // 50MB — needed for KYC document uploads (base64 images)
   });
 
   // ── Global middleware & plugins ────────────
