@@ -14,10 +14,10 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
 
   // PostgreSQL
-  DATABASE_URL: z.string().default('postgres://novabit:novabit_secret@localhost:5432/novabit_exchange'),
+  DATABASE_URL: z.string().default(''),  // empty = use pg-mem in-memory DB
 
   // Redis
-  REDIS_URL: z.string().default('redis://localhost:6379'),
+  REDIS_URL: z.string().default(''),  // empty = use in-memory mock
 
   // JWT
   JWT_SECRET: z.string().min(16).default('novabit-dev-jwt-secret-min-32-chars!!'),
@@ -30,7 +30,7 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
 
   // Logging
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  LOG_LEVEL: z.string().toLowerCase().pipe(z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])).default('info'),
 
   // Wallet address generation
   WALLET_SEED: z.string().min(8).default('novabit-seed-change-in-production!!'),
