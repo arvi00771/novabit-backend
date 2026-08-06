@@ -79,11 +79,29 @@ export default async function authRoutes(fastify: FastifyInstance) {
       const ipAddress = request.ip;
 
       // Verify credentials
-      const verified = await authService.verifyCredentials(
-        input.email,
-        input.password,
-        input.totp_code,
-      );
+      let verified;
+      try {
+        verified = await authService.verifyCredentials(
+          input.email,
+          input.password,
+          input.totp_code,
+        );
+      } catch (err: any) {
+        // If 2FA is required but not provided, return a proper response
+        // so the frontend knows to prompt for the 2FA code.
+        // Credentials (email+password) were already validated before 2FA check.
+        if (err.code === '2FA_REQUIRED') {
+          return reply.send({
+            success: true,
+            data: {
+              require_2fa: true,
+              message: '2FA code required. Please enter your authenticator code.',
+            },
+            timestamp: Date.now(),
+          });
+        }
+        throw err;
+      }
 
       // Generate access token (JWT) using Fastify's JWT
       const accessToken = fastify.jwt.sign(
