@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS kyc_documents (
 CREATE TABLE IF NOT EXISTS password_resets (
     id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token           TEXT NOT NULL UNIQUE,
+    token_hash      TEXT NOT NULL,
     expires_at      TEXT NOT NULL,
     used_at         TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))

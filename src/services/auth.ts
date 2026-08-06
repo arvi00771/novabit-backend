@@ -295,7 +295,8 @@ export class AuthService {
   }
 
   // ── Forgot Password ───────────────────────────
-  async forgotPassword(email: string): Promise<{ message: string }> {
+  async forgotPassword(email: string): Promise<{ message: string; resetToken?: string }> {
+    let resetToken: string | undefined;
     // Always return success to avoid email enumeration
     const user = await this.db.query(
       'SELECT id FROM users WHERE email = $1 AND is_active = TRUE',
@@ -321,12 +322,14 @@ export class AuthService {
         [userId, tokenHash, expiresAt],
       );
 
-      // In production, send email with reset link containing the token
+      // Return token directly (dev mode — no email service yet)
+      resetToken = token;
       console.log(`[DEV] Password reset token for ${email}: ${token}`);
     }
 
     return {
       message: 'If an account with that email exists, a password reset link has been sent.',
+      resetToken,
     };
   }
 
