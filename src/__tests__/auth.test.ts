@@ -3,7 +3,9 @@
  * These tests validate Zod schemas — no database required.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import bcrypt from 'bcryptjs';
+import { authenticator } from 'otplib';
 
 describe('Auth Schemas - Register', () => {
   it('should accept valid registration input', async () => {
@@ -228,5 +230,84 @@ describe('Migration - Password Resets', () => {
       .sort();
 
     expect(files).toContain('006_create_password_resets.sql');
+  });
+});
+
+describe('Auth Service - 2FA enrollment', () => {
+  it('stores hashed recovery codes as a JSON string after a valid TOTP verification', async () => {
+    const secret = authenticator.generateSecret();
+    const userId = 'user-2fa-valid';
+    const recoveryCodes = [
+      'ABCD-EFGH',
+      'IJKL-MNOP',
+      'QRST-UVWX',
+      'YZ12-3456',
+      '789A-BCDE',
+      'FGHI-JKLM',
+      'NOPQ-RSTU',
+      'VWXY-Z012',
+    ];
+    const db = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ id: userId, totp_secret: secret, is_2fa_enabled: false }],
+          rowCount: 1,
+        })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }),
+    };
+    const { AuthService } = await import('../services/auth.js');
+    const service = new AuthService(db as any);
+    (service as any).generateRecoveryCodes = () => recoveryCodes;
+
+    await service.verifyAndEnable2fa(userId, authenticator.generate(secret));
+
+    expect(db.query).toHaveBeenCalledTimes(2);
+    const [updateSql, updateParams] = db.query.mock.calls[1];
+    expect(updateSql).toContain('UPDATE users SET is_2fa_enabled = TRUE');
+    expect(updateParams[1]).toBe(userId);
+    expect(typeof updateParams[0]).toBe('string');
+
+    const storedRecoveryCodes = JSON.parse(updateParams[0]);
+    expect(storedRecoveryCodes).toHaveLength(recoveryCodes.length);
+    expect(storedRecoveryCodes.every((code: unknown) => typeof code === 'string')).toBe(true);
+    await expect(bcrypt.compare(recoveryCodes[0], storedRecoveryCodes[0])).resolves.toBe(true);
+  });
+
+  it('rejects an invalid TOTP code without enabling 2FA', async () => {
+    const secret = authenticator.generateSecret();
+    const db = {
+      query: vi.fn().mockResolvedValue({
+        rows: [{ id: 'user-2fa-invalid', totp_secret: secret, is_2fa_enabled: false }],
+        rowCount: 1,
+      }),
+    };
+    const { AuthService } = await import('../services/auth.js');
+    const service = new AuthService(db as any);
+
+    await expect(service.verifyAndEnable2fa('user-2fa-invalid', '000000')).rejects.toMatchObject({
+      code: 'INVALID_2FA_CODE',
+    });
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an absolute otpauth URI suitable for frontend QR-code rendering', async () => {
+    const db = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [{ id: 'user-qr', email: 'qr@example.com', is_2fa_enabled: false }],
+          rowCount: 1,
+        })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 }),
+    };
+    const { AuthService } = await import('../services/auth.js');
+    const service = new AuthService(db as any);
+
+    const setup = await service.generate2faSecret('user-qr');
+
+    expect(setup.uri).toMatch(/^otpauth:\/\/totp\//);
+    expect(setup.qr_code_url).toBe(setup.uri);
+    expect(new URL(setup.uri).searchParams.get('secret')).toBe(setup.secret);
   });
 });

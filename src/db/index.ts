@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import type pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import type { Redis as RedisType } from 'ioredis';
@@ -387,8 +388,6 @@ class SqlitePool extends EventEmitter {
       }
 
       const isSelect = /^\s*SELECT/i.test(s);
-      const isReturning = /RETURNING\s/i.test(s);
-
       if (isSelect) {
         const stmt = db.prepare(s);
         const rows = params ? stmt.all(...params) : stmt.all();
@@ -438,9 +437,11 @@ export function createRedisClient(): RedisType {
 let _pg: SqlitePool | null = null;
 let _rd: RedisType | null = null;
 
-export function getDb(): SqlitePool {
+export function getDb(): pg.Pool {
   if (!_pg) _pg = createPostgresPool();
-  return _pg;
+  // The in-memory development adapter implements the query/connect surface used
+  // by application services while production services are typed against pg.Pool.
+  return _pg as unknown as pg.Pool;
 }
 
 export function getRedis(): RedisType {

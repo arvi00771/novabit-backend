@@ -245,7 +245,7 @@ export class AuthService {
 
     await this.db.query(
       `UPDATE users SET is_2fa_enabled = TRUE, recovery_codes = $1 WHERE id = $2`,
-      [hashedRecoveryCodes, userId],
+      [JSON.stringify(hashedRecoveryCodes), userId],
     );
   }
 
