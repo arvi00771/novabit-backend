@@ -287,3 +287,59 @@ describe('KYC audit_logs schema alignment (regression: ERR_SQLITE_ERROR)', () =>
     expect(config.KYC_DATA_DIR.startsWith('/home/team/shared')).toBe(true);
   });
 });
+
+describe('KYC submit survives audit-log failure (regression: no 500, no duplicates)', () => {
+  it('returns 201 and stores exactly one document when audit write fails', async () => {
+    const { buildApp } = await import('../app.js');
+    const { AuditService } = await import('../services/audit.js');
+    const { getDb } = await import('../db/index.js');
+    const db = getDb() as any;
+    // Simulate an audit-log storage failure (e.g. schema drift / DB error).
+    const spy = vi.spyOn(AuditService.prototype, 'logKYCSubmission')
+      .mockRejectedValue(new Error('simulated audit write failure'));
+
+    const app = await buildApp();
+    try {
+      // login as seeded test user
+      const login = await app.inject({
+        method: 'POST', url: '/api/v1/auth/login',
+        payload: { email: 'arvi00772@gmail.com', password: 'Test1234!' },
+      });
+      expect(login.statusCode).toBe(200);
+      const token = login.json().data.access_token;
+
+      // submit KYC with a synthetic 1x1 PNG (no real identity data)
+      const submit = await app.inject({
+        method: 'POST', url: '/api/v1/kyc/submit',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          full_name: 'KYC Test User',
+          date_of_birth: '1990-01-01',
+          nationality: 'EE',
+          address_street: 'Test 1', address_city: 'Tallinn',
+          address_postal_code: '10115', address_country: 'EE',
+          document_type: 'PASSPORT',
+          documents: [{
+            document_type: 'PASSPORT',
+            mime_type: 'image/png',
+            file_path: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+          }],
+        },
+      });
+      expect(submit.statusCode).toBe(201); // success despite audit failure
+      expect(submit.json().success).toBe(true);
+
+      // no duplicate: exactly one kyc_documents row for the user
+      const userRow = (await db.query(
+        `SELECT id FROM users WHERE email = 'arvi00772@gmail.com'`,
+      )).rows[0];
+      const docs = (await db.query(
+        `SELECT COUNT(*) AS c FROM kyc_documents WHERE user_id = $1`, [userRow.id],
+      )).rows[0];
+      expect(Number(docs.c)).toBe(1);
+    } finally {
+      spy.mockRestore();
+      await app.close();
+    }
+  });
+});

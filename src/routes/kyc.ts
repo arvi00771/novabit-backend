@@ -97,7 +97,7 @@ export default async function kycRoutes(fastify: FastifyInstance) {
       const placeholderHash = crypto.createHash('sha256').update(`${userId}:${Date.now()}`).digest('hex');
       documents.push({
         documentType: 'PASSPORT',
-        filePath: `/data/kyc/${userId}/id_document_${Date.now()}.jpg`,
+        filePath: `${KYC_DATA_DIR}/${userId}/id_document_${Date.now()}.jpg`,
         fileHash: placeholderHash,
         fileSize: 0,
         mimeType: 'image/jpeg',
@@ -106,8 +106,14 @@ export default async function kycRoutes(fastify: FastifyInstance) {
 
     const result = await kycService.submitKYC(userId, personalInfo, documents);
 
-    // Audit log
-    await auditService.logKYCSubmission(userId, request.ip, request.headers['user-agent']);
+    // Audit log — must NEVER fail an already-completed submission.
+    // A write failure here is logged and swallowed; the KYC submission itself
+    // (file + DB row) has already succeeded and must return 201.
+    try {
+      await auditService.logKYCSubmission(userId, request.ip, request.headers['user-agent']);
+    } catch (auditErr) {
+      request.log.error({ err: auditErr, userId }, 'Failed to write KYC_SUBMIT audit event; continuing');
+    }
 
     return reply.status(201).send({
       success: true,

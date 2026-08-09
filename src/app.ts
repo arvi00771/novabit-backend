@@ -149,7 +149,10 @@ async function main() {
   }
 }
 
-main();
+// Start the server only when run directly (not when imported by tests — vitest sets NODE_ENV=test).
+if (config.NODE_ENV !== 'test') {
+  main();
+}
 
 // Export for testing
 export { buildApp };
