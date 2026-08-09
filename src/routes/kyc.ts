@@ -17,7 +17,8 @@ import { LimitsService } from '../services/limits.js';
 import { getDb } from '../db/index.js';
 import { KYCSubmitSchema } from '../schemas/kyc.js';
 
-const KYC_DATA_DIR = '/data/kyc';
+import { config } from '../config/index.js';
+const KYC_DATA_DIR = config.KYC_DATA_DIR;
 
 function base64ToFile(dataUrl: string, userId: string, docType: string): { filePath: string; fileHash: string; fileSize: number } {
   // data URL format: "data:image/jpeg;base64,AAAA..."

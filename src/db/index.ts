@@ -262,10 +262,12 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
     user_id         TEXT REFERENCES users(id),
     action          TEXT NOT NULL,
-    resource        TEXT,
-    resource_id     TEXT,
-    details         TEXT,
+    entity_type     TEXT,
+    entity_id       TEXT,
+    old_value       TEXT,
+    new_value       TEXT,
     ip_address      TEXT,
+    user_agent      TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

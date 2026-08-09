@@ -269,3 +269,21 @@ describe('KYC Routes - Existence', () => {
     expect(content).toContain('kyc');
   });
 });
+describe('KYC audit_logs schema alignment (regression: ERR_SQLITE_ERROR)', () => {
+  it('should insert an audit log without ERR_SQLITE_ERROR', async () => {
+    const { getDb } = await import('../db/index.js');
+    const { AuditService } = await import('../services/audit.js');
+    const db = getDb() as any;
+    const userRow = (await db.query(`SELECT id FROM users WHERE email = 'arvi00772@gmail.com'`)).rows[0];
+    expect(userRow).toBeTruthy();
+    const audit = new AuditService(db);
+    await expect(
+      audit.logKYCSubmission(userRow.id, '127.0.0.1', 'vitest'),
+    ).resolves.not.toThrow();
+  });
+  it('KYC_DATA_DIR defaults to a persistent path (not ephemeral /data)', async () => {
+    const { config } = await import('../config/index.js');
+    expect(config.KYC_DATA_DIR).toBe('/home/team/shared/data/kyc');
+    expect(config.KYC_DATA_DIR.startsWith('/home/team/shared')).toBe(true);
+  });
+});

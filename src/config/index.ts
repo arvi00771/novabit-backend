@@ -34,6 +34,9 @@ const envSchema = z.object({
 
   // Wallet address generation
   WALLET_SEED: z.string().min(8).default('novabit-seed-change-in-production!!'),
+  // KYC document storage (must be a PERSISTENT directory — default lives on the
+  // shared persistent volume; never falls back to ephemeral /data)
+  KYC_DATA_DIR: z.string().default('/home/team/shared/data/kyc'),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

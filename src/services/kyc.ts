@@ -15,7 +15,25 @@ import path from 'node:path';
 import { AppError } from '../middleware/error-handler.js';
 import { KYCSubmitInput, KYCDocumentResponse, KYCStatusResponse } from '../schemas/kyc.js';
 
-const KYC_DATA_DIR = '/data/kyc';
+import { config } from '../config/index.js';
+export const KYC_DATA_DIR = config.KYC_DATA_DIR;
+
+
+/**
+ * Ensure the KYC data directory exists and is writable BEFORE any uploads.
+ * Fails loudly on misconfiguration — never silently falls back to an
+ * ephemeral directory (e.g. /data) that would lose compliance documents.
+ */
+export function ensureKycDataDir(): void {
+  try {
+    fs.mkdirSync(KYC_DATA_DIR, { recursive: true });
+    fs.accessSync(KYC_DATA_DIR, fs.constants.W_OK);
+    console.log(`[kyc] upload dir ready: ${KYC_DATA_DIR}`);
+  } catch (err) {
+    console.error(`[kyc] FATAL: cannot create/write KYC_DATA_DIR=${KYC_DATA_DIR}`, err);
+    throw err;
+  }
+}
 
 export class KYCService {
   constructor(private db: pg.Pool) {}
