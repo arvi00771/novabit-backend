@@ -9,6 +9,7 @@ import Fastify from 'fastify';
 import { config } from './config/index.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
 import { closeConnections } from './db/index.js';
+import { ensureKycDataDir } from './services/kyc.js';
 
 async function buildApp() {
   const app = Fastify({
@@ -134,7 +135,8 @@ async function main() {
   const app = await buildApp();
 
   try {
-    await app.listen({
+    await ensureKycDataDir();
+    app.listen({
       host: config.HOST,
       port: config.PORT,
     });
@@ -147,7 +149,10 @@ async function main() {
   }
 }
 
-main();
+// Start the server only when run directly (not when imported by tests — vitest sets NODE_ENV=test).
+if (config.NODE_ENV !== 'test') {
+  main();
+}
 
 // Export for testing
 export { buildApp };

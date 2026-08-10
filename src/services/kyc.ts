@@ -15,7 +15,58 @@ import path from 'node:path';
 import { AppError } from '../middleware/error-handler.js';
 import { KYCSubmitInput, KYCDocumentResponse, KYCStatusResponse } from '../schemas/kyc.js';
 
-const KYC_DATA_DIR = '/data/kyc';
+import { config } from '../config/index.js';
+export const KYC_DATA_DIR = config.KYC_DATA_DIR;
+
+
+/** The shared team volume — identity documents must never live here. */
+const SHARED_TEAM_DIR = '/home/team/shared';
+
+/**
+ * Ensure the KYC data directory exists and is SAFE before any uploads.
+ * Fails loudly on misconfiguration — never silently falls back to an
+ * ephemeral directory (e.g. /data) that would lose compliance documents.
+ *
+ * Validates, in order:
+ *  1. Absolute path (a relative path is a misconfiguration).
+ *  2. Not inside the shared team volume (sensitive PII must be private).
+ *  3. Is a directory (not a file/symlink target).
+ *  4. Owned by the process user (foreign-owned dirs are refused).
+ *  5. Permissions tightened to 0700 (owner-only) if misconfigured.
+ *  6. Actually writable via a create-and-delete probe (not just access()).
+ */
+export function ensureKycDataDir(dir: string = KYC_DATA_DIR): void {
+  if (!path.isAbsolute(dir)) {
+    throw new Error(`KYC_DATA_DIR must be an absolute path, got: ${dir}`);
+  }
+  const resolved = path.resolve(dir);
+  if (resolved === SHARED_TEAM_DIR || resolved.startsWith(`${SHARED_TEAM_DIR}/`)) {
+    throw new Error(
+      `KYC_DATA_DIR must NOT be inside the shared team directory (${SHARED_TEAM_DIR}): ${resolved}`,
+    );
+  }
+  fs.mkdirSync(resolved, { recursive: true, mode: 0o700 });
+  const st = fs.statSync(resolved);
+  if (!st.isDirectory()) {
+    throw new Error(`KYC_DATA_DIR exists but is not a directory: ${resolved}`);
+  }
+  const uid = process.getuid?.();
+  if (typeof uid === 'number' && st.uid !== uid) {
+    throw new Error(
+      `KYC_DATA_DIR is owned by uid ${st.uid} but the server runs as uid ${uid}; ` +
+      `refusing to store identity documents in a foreign-owned directory: ${resolved}`,
+    );
+  }
+  const mode = st.mode & 0o777;
+  if (mode !== 0o700) {
+    fs.chmodSync(resolved, 0o700);
+    console.warn(`[kyc] tightened KYC_DATA_DIR permissions from ${mode.toString(8)} to 0700: ${resolved}`);
+  }
+  const probe = path.join(resolved, `.write-probe-${process.pid}`);
+  fs.writeFileSync(probe, 'ok');
+  fs.unlinkSync(probe);
+  console.log(`[kyc] upload dir ready (0700, owner-only): ${resolved}`);
+}
 
 export class KYCService {
   constructor(private db: pg.Pool) {}

@@ -3,6 +3,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 describe('KYC Schemas - Submit Validation', () => {
   it('should accept valid KYC submission', async () => {
@@ -267,5 +270,123 @@ describe('KYC Routes - Existence', () => {
     const content = readFileSync(indexPath, 'utf-8');
 
     expect(content).toContain('kyc');
+  });
+});
+describe('KYC audit_logs schema alignment (regression: ERR_SQLITE_ERROR)', () => {
+  it('should insert an audit log without ERR_SQLITE_ERROR', async () => {
+    const { getDb } = await import('../db/index.js');
+    const { AuditService } = await import('../services/audit.js');
+    const db = getDb() as any;
+    const userRow = (await db.query(`SELECT id FROM users WHERE email = 'arvi00772@gmail.com'`)).rows[0];
+    expect(userRow).toBeTruthy();
+    const audit = new AuditService(db);
+    await expect(
+      audit.logKYCSubmission(userRow.id, '127.0.0.1', 'vitest'),
+    ).resolves.not.toThrow();
+  });
+  it('KYC_DATA_DIR defaults to a private persistent path (never /home/team/shared, never ephemeral /data)', async () => {
+    const { config } = await import('../config/index.js');
+    expect(path.isAbsolute(config.KYC_DATA_DIR)).toBe(true);
+    // Sensitive identity documents must NOT default into the shared team volume
+    // or the ephemeral overlay FS — only a private app-owned directory is safe.
+    expect(config.KYC_DATA_DIR.startsWith('/home/team/shared')).toBe(false);
+    expect(config.KYC_DATA_DIR.startsWith('/data')).toBe(false);
+    expect(config.KYC_DATA_DIR.includes('.local/share/novabit')).toBe(true);
+  });
+});
+
+describe('KYC data dir preflight (regression: private 0700, owner-checked, never shared)', () => {
+  it('creates a missing dir with 0700 owner-only permissions', async () => {
+    const { ensureKycDataDir } = await import('../services/kyc.js');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kyc-preflight-'));
+    const target = path.join(tmp, 'nested', 'kyc');
+    try {
+      ensureKycDataDir(target);
+      const st = fs.statSync(target);
+      expect(st.isDirectory()).toBe(true);
+      expect(st.mode & 0o777).toBe(0o700);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('tightens an existing too-permissive dir to 0700', async () => {
+    const { ensureKycDataDir } = await import('../services/kyc.js');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kyc-preflight-'));
+    const target = path.join(tmp, 'kyc');
+    fs.mkdirSync(target, { recursive: true, mode: 0o755 });
+    try {
+      ensureKycDataDir(target);
+      expect(fs.statSync(target).mode & 0o777).toBe(0o700);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a directory inside the shared team volume', async () => {
+    const { ensureKycDataDir } = await import('../services/kyc.js');
+    expect(() => ensureKycDataDir('/home/team/shared/data/kyc')).toThrow(/shared team directory/);
+    expect(() => ensureKycDataDir('/home/team/shared')).toThrow(/shared team directory/);
+  });
+
+  it('rejects a relative path', async () => {
+    const { ensureKycDataDir } = await import('../services/kyc.js');
+    expect(() => ensureKycDataDir('relative/kyc')).toThrow(/absolute path/);
+  });
+});
+
+describe('KYC submit survives audit-log failure (regression: no 500, no duplicates)', () => {
+  it('returns 201 and stores exactly one document when audit write fails', async () => {
+    const { buildApp } = await import('../app.js');
+    const { AuditService } = await import('../services/audit.js');
+    const { getDb } = await import('../db/index.js');
+    const db = getDb() as any;
+    // Simulate an audit-log storage failure (e.g. schema drift / DB error).
+    const spy = vi.spyOn(AuditService.prototype, 'logKYCSubmission')
+      .mockRejectedValue(new Error('simulated audit write failure'));
+
+    const app = await buildApp();
+    try {
+      // login as seeded test user
+      const login = await app.inject({
+        method: 'POST', url: '/api/v1/auth/login',
+        payload: { email: 'arvi00772@gmail.com', password: 'Test1234!' },
+      });
+      expect(login.statusCode).toBe(200);
+      const token = login.json().data.access_token;
+
+      // submit KYC with a synthetic 1x1 PNG (no real identity data)
+      const submit = await app.inject({
+        method: 'POST', url: '/api/v1/kyc/submit',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          full_name: 'KYC Test User',
+          date_of_birth: '1990-01-01',
+          nationality: 'EE',
+          address_street: 'Test 1', address_city: 'Tallinn',
+          address_postal_code: '10115', address_country: 'EE',
+          document_type: 'PASSPORT',
+          documents: [{
+            document_type: 'PASSPORT',
+            mime_type: 'image/png',
+            file_path: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+          }],
+        },
+      });
+      expect(submit.statusCode).toBe(201); // success despite audit failure
+      expect(submit.json().success).toBe(true);
+
+      // no duplicate: exactly one kyc_documents row for the user
+      const userRow = (await db.query(
+        `SELECT id FROM users WHERE email = 'arvi00772@gmail.com'`,
+      )).rows[0];
+      const docs = (await db.query(
+        `SELECT COUNT(*) AS c FROM kyc_documents WHERE user_id = $1`, [userRow.id],
+      )).rows[0];
+      expect(Number(docs.c)).toBe(1);
+    } finally {
+      spy.mockRestore();
+      await app.close();
+    }
   });
 });
