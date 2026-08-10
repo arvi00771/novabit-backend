@@ -36,8 +36,10 @@ function base64ToFile(dataUrl: string, userId: string, docType: string): { fileP
   const userDir = path.join(KYC_DATA_DIR, userId);
 
   if (!fs.existsSync(userDir)) {
-    fs.mkdirSync(userDir, { recursive: true });
+    fs.mkdirSync(userDir, { recursive: true, mode: 0o700 });
   }
+  // Identity documents are sensitive PII — per-user dirs stay owner-only.
+  fs.chmodSync(userDir, 0o700);
 
   const filename = `${docType.toLowerCase()}_${Date.now()}.${ext}`;
   const filePath = path.join(userDir, filename);

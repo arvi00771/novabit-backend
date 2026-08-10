@@ -3,6 +3,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 describe('KYC Schemas - Submit Validation', () => {
   it('should accept valid KYC submission', async () => {
@@ -281,10 +284,54 @@ describe('KYC audit_logs schema alignment (regression: ERR_SQLITE_ERROR)', () =>
       audit.logKYCSubmission(userRow.id, '127.0.0.1', 'vitest'),
     ).resolves.not.toThrow();
   });
-  it('KYC_DATA_DIR defaults to a persistent path (not ephemeral /data)', async () => {
+  it('KYC_DATA_DIR defaults to a private persistent path (never /home/team/shared, never ephemeral /data)', async () => {
     const { config } = await import('../config/index.js');
-    expect(config.KYC_DATA_DIR).toBe('/home/team/shared/data/kyc');
-    expect(config.KYC_DATA_DIR.startsWith('/home/team/shared')).toBe(true);
+    expect(path.isAbsolute(config.KYC_DATA_DIR)).toBe(true);
+    // Sensitive identity documents must NOT default into the shared team volume
+    // or the ephemeral overlay FS — only a private app-owned directory is safe.
+    expect(config.KYC_DATA_DIR.startsWith('/home/team/shared')).toBe(false);
+    expect(config.KYC_DATA_DIR.startsWith('/data')).toBe(false);
+    expect(config.KYC_DATA_DIR.includes('.local/share/novabit')).toBe(true);
+  });
+});
+
+describe('KYC data dir preflight (regression: private 0700, owner-checked, never shared)', () => {
+  it('creates a missing dir with 0700 owner-only permissions', async () => {
+    const { ensureKycDataDir } = await import('../services/kyc.js');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kyc-preflight-'));
+    const target = path.join(tmp, 'nested', 'kyc');
+    try {
+      ensureKycDataDir(target);
+      const st = fs.statSync(target);
+      expect(st.isDirectory()).toBe(true);
+      expect(st.mode & 0o777).toBe(0o700);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('tightens an existing too-permissive dir to 0700', async () => {
+    const { ensureKycDataDir } = await import('../services/kyc.js');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kyc-preflight-'));
+    const target = path.join(tmp, 'kyc');
+    fs.mkdirSync(target, { recursive: true, mode: 0o755 });
+    try {
+      ensureKycDataDir(target);
+      expect(fs.statSync(target).mode & 0o777).toBe(0o700);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a directory inside the shared team volume', async () => {
+    const { ensureKycDataDir } = await import('../services/kyc.js');
+    expect(() => ensureKycDataDir('/home/team/shared/data/kyc')).toThrow(/shared team directory/);
+    expect(() => ensureKycDataDir('/home/team/shared')).toThrow(/shared team directory/);
+  });
+
+  it('rejects a relative path', async () => {
+    const { ensureKycDataDir } = await import('../services/kyc.js');
+    expect(() => ensureKycDataDir('relative/kyc')).toThrow(/absolute path/);
   });
 });
 
