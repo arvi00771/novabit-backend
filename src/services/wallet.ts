@@ -8,6 +8,7 @@
 
 import pg from 'pg';
 import crypto from 'node:crypto';
+import { authenticator } from 'otplib';
 import { AppError } from '../middleware/error-handler.js';
 import { config } from '../config/index.js';
 import {
@@ -186,6 +187,36 @@ export class WalletService {
         `Insufficient available balance. Available: ${availableBalance.toFixed(8)} ${asset}`);
     }
 
+    // ── Server-side 2FA enforcement ─────────────
+    // A caller with a valid JWT but no verified second factor must NOT be
+    // able to move funds. When the user has 2FA enabled, require a valid
+    // TOTP code verified against the stored secret before any balance is
+    // locked or any withdrawal record is created.
+    const userResult = await this.db.query(
+      `SELECT id, is_2fa_enabled, totp_secret FROM users WHERE id = $1`,
+      [userId],
+    );
+
+    if (userResult.rows.length === 0) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'User not found');
+    }
+
+    const dbUser = userResult.rows[0];
+    const twoFactorEnabled = Boolean(dbUser.is_2fa_enabled);
+
+    if (twoFactorEnabled) {
+      if (!input.totp_code) {
+        throw new AppError(400, 'INVALID_2FA', '2FA code is required for withdrawals');
+      }
+      if (!dbUser.totp_secret) {
+        throw new AppError(400, 'INVALID_2FA', '2FA is not set up for this account');
+      }
+      const totpValid = authenticator.check(input.totp_code, dbUser.totp_secret);
+      if (!totpValid) {
+        throw new AppError(400, 'INVALID_2FA', 'Invalid 2FA code');
+      }
+    }
+
     // Calculate fee (simplified: 0.0005 BTC, 0.01 ETH, 1 USDT)
     const fee = this.calculateWithdrawalFee(asset);
 
@@ -212,7 +243,10 @@ export class WalletService {
         input.network,
         input.address,
         input.memo || null,
-        !input.totp_code, // requires 2fa if no totp provided
+        // 2FA challenge already verified above when required; the flag now
+        // records whether the account has 2FA enabled (i.e. the second
+        // factor was enforced for this request), not field presence.
+        twoFactorEnabled ? 1 : 0,
       ],
     );
 
