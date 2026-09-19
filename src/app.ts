@@ -105,10 +105,14 @@ async function buildApp() {
   // WebSocket support (for real-time order book, trades, tickers)
   await app.register(import('@fastify/websocket'));
 
-  // PostgreSQL & Redis connection plugins
-  await app.register(import('@fastify/postgres'), {
-    connectionString: config.DATABASE_URL,
-  });
+  // PostgreSQL plugin — only registers when a real DATABASE_URL is configured.
+  // In dev/test without DATABASE_URL the app uses the in-memory SQLite adapter
+  // and a pointless pg client would only add failure modes.
+  if (config.DATABASE_URL) {
+    await app.register(import('@fastify/postgres'), {
+      connectionString: config.DATABASE_URL,
+    });
+  }
 
   // ── Error handler ──────────────────────────
   registerErrorHandler(app);

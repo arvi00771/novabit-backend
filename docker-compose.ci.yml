@@ -31,9 +31,13 @@ services:
       REDIS_URL: redis://redis:6379
       NODE_ENV: test
       JWT_SECRET: test_secret
+      WALLET_SEED: ci-test-seed-not-for-production
+      KYC_DATA_DIR: /tmp/novabit-kyc-ci
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: npm test
+    # Run migrations and the demo-user seed against the real PostgreSQL service,
+    # then execute the test suite against PostgreSQL (not the SQLite adapter).
+    command: sh -c "npm run migrate:up && npm run seed:test && npm test"

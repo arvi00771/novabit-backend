@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS users (
     -- 2FA
     totp_secret     VARCHAR(64),   -- encrypted TOTP secret (null if not enabled)
     is_2fa_enabled  BOOLEAN NOT NULL DEFAULT FALSE,
-    recovery_codes  TEXT[],        -- hashed recovery codes
+    recovery_codes  TEXT,           -- JSON-stringified array of hashed recovery codes (service stores JSON.stringify'd data)
 
     -- Security
     is_withdrawal_whitelist_enabled BOOLEAN NOT NULL DEFAULT FALSE,

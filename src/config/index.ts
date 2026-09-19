@@ -15,13 +15,15 @@ const envSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   PORT: z.coerce.number().int().positive().default(3000),
 
-  // PostgreSQL
-  DATABASE_URL: z.string().default(''),  // empty = use pg-mem in-memory DB
+  // PostgreSQL — production REQUIRES an explicit connection string. Empty is only
+  // allowed in development/test and selects the in-memory SQLite adapter.
+  DATABASE_URL: z.string().default(''),  // empty = dev/test-only in-memory SQLite
 
-  // Redis
-  REDIS_URL: z.string().default(''),  // empty = use in-memory mock
+  // Redis — empty in dev/test = in-memory mock. Production requires a real URL.
+  REDIS_URL: z.string().default(''),
 
-  // JWT
+  // JWT — production REQUIRES an explicit long secret; the dev default must never
+  // reach production (would make issued tokens forgeable).
   JWT_SECRET: z.string().min(16).default('novabit-dev-jwt-secret-min-32-chars!!'),
 
   // CORS
@@ -54,16 +56,34 @@ function loadConfig(): EnvConfig {
     process.exit(1);
   }
   const cfg = result.data;
+  const isProd = cfg.NODE_ENV === 'production';
   // Production must NEVER fall back to a derived default for identity-document
   // storage — the operator has to point KYC_DATA_DIR at a private, persistent,
   // app-owned directory explicitly. Fail startup instead of guessing.
-  if (cfg.NODE_ENV === 'production' && !process.env.KYC_DATA_DIR) {
+  if (isProd && !process.env.KYC_DATA_DIR) {
     console.error(
       '❌ Invalid configuration: KYC_DATA_DIR must be explicitly set in production. ' +
       'Point it at a private, persistent, application-owned directory (e.g. /var/lib/novabit/kyc). ' +
       'Sensitive identity documents must not be stored in a shared or ephemeral location.',
     );
     process.exit(1);
+  }
+  // Production deployment gate: an exchange MUST NOT boot against an ephemeral
+  // in-memory database or the shipped JWT/seed defaults.
+  if (isProd) {
+    const missing: string[] = [];
+    if (!process.env.DATABASE_URL) missing.push('DATABASE_URL');
+    if (!process.env.REDIS_URL) missing.push('REDIS_URL');
+    if (!process.env.JWT_SECRET) missing.push('JWT_SECRET');
+    if (!process.env.WALLET_SEED) missing.push('WALLET_SEED');
+    if (missing.length > 0) {
+      console.error(
+        `❌ Invalid configuration: production requires explicit ${missing.join(', ')}. ` +
+        'Refusing to start with an ephemeral database or default secrets — ' +
+        'provision real PostgreSQL/Redis and secrets before deploying.',
+      );
+      process.exit(1);
+    }
   }
   return cfg;
 }
