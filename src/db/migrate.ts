@@ -57,7 +57,7 @@ function getMigrations(): Migration[] {
     .filter((f) => f.endsWith('.sql'))
     .sort();
 
-  return files.map((filename) => {
+  const migrations = files.map((filename) => {
     const match = filename.match(/^(\d+)_(.+)\.sql$/);
     if (!match) throw new Error(`Invalid migration filename: ${filename}`);
     const content = readFileSync(join(MIGRATIONS_DIR, filename), 'utf-8');
@@ -69,6 +69,24 @@ function getMigrations(): Migration[] {
       checksum: getChecksum(content),
     };
   });
+
+  // A migration set with duplicate version numbers is a release-blocking bug:
+  // the runner would silently skip the second file ("already applied") and
+  // leave schema drift in production. Fail loudly instead.
+  const seen = new Map<number, string>();
+  for (const m of migrations) {
+    const prev = seen.get(m.version);
+    if (prev) {
+      throw new Error(
+        `Duplicate migration version ${m.version}: "${prev}" and "${m.filename}". ` +
+        `Every migration file must have a unique version prefix. Renumber ${m.filename} ` +
+        `to a new version and add a corrective migration for any environment that ` +
+        `already applied the old one.`,
+      );
+    }
+    seen.set(m.version, m.filename);
+  }
+  return migrations;
 }
 
 async function status(client: pg.Client): Promise<void> {

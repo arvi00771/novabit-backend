@@ -17,7 +17,9 @@
     "test:watch": "vitest",
     "migrate:up": "tsx src/db/migrate.ts up",
     "migrate:down": "tsx src/db/migrate.ts down",
-    "migrate:reset": "tsx src/db/migrate.ts reset"
+    "migrate:reset": "tsx src/db/migrate.ts reset",
+    "migrate:status": "tsx src/db/migrate.ts status",
+    "seed:test": "tsx src/db/seed-test.ts"
   },
   "dependencies": {
     "@emurgo/cardano-serialization-lib-nodejs": "^15.0.3",

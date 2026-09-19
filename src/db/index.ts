@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import type pg from 'pg';
+import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import type { Redis as RedisType } from 'ioredis';
@@ -7,8 +7,18 @@ import { EventEmitter } from 'events';
 import { config } from '../config/index.js';
 import bcrypt from 'bcryptjs';
 
-// ── SQLite in-memory DB ──────────────────────────
-let sqlite: DatabaseSync | null = null;
+// ── Persistence backend selection ─────────────────
+// The exchange runs on PostgreSQL in any real deployment (DATABASE_URL set).
+// The in-memory SQLite adapter is a dev/test-only fallback so the app can boot
+// with zero external dependencies — it is explicitly refused in production by
+// the config gate (see src/config/index.ts) because an exchange must never run
+// against an ephemeral database.
+export const isSqlite = config.DATABASE_URL.trim().length === 0;
+if (!isSqlite) {
+  console.log(`[DB] Using PostgreSQL: ${config.DATABASE_URL.split('@').pop()?.split('?')[0] ?? ''}`);
+} else {
+  console.log('[DB] No DATABASE_URL set — using in-memory SQLite (dev/test only)');
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -317,6 +327,8 @@ INSERT OR IGNORE INTO supported_coins (id, symbol, name, network, decimals)
 VALUES ('coin_avax', 'AVAX', 'Avalanche', 'AVALANCHE', 18);
 `;
 
+let sqlite: DatabaseSync | null = null;
+
 function getSqlite(): DatabaseSync {
   if (!sqlite) {
     sqlite = new DatabaseSync(':memory:');
@@ -414,9 +426,32 @@ class SqlitePool extends EventEmitter {
 }
 
 // ── Public API ──────────────────────────────────
-export function createPostgresPool(): SqlitePool {
-  console.log('[DB] Using in-memory node:sqlite database');
-  return new SqlitePool();
+let _realPg: pg.Pool | null = null;
+
+/**
+ * Create the application's database pool.
+ *
+ * - When DATABASE_URL is configured (non-empty): a real PostgreSQL pool.
+ * - When empty (dev/test): the in-memory SQLite adapter.
+ *
+ * Production is guaranteed to take the PostgreSQL branch because the config
+ * gate (src/config/index.ts) refuses to start when DATABASE_URL is unset.
+ */
+export function createPostgresPool(): pg.Pool {
+  if (isSqlite) {
+    console.log('[DB] Using in-memory node:sqlite database (dev/test only)');
+    return new SqlitePool() as unknown as pg.Pool;
+  }
+  _realPg = new pg.Pool({
+    connectionString: config.DATABASE_URL,
+    max: 20,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+  });
+  _realPg.on('error', (err) => {
+    console.error('[DB] Unexpected PostgreSQL pool error:', err.message);
+  });
+  return _realPg;
 }
 
 export function createRedisClient(): RedisType {
@@ -436,13 +471,11 @@ export function createRedisClient(): RedisType {
   return c;
 }
 
-let _pg: SqlitePool | null = null;
+let _pg: pg.Pool | null = null;
 let _rd: RedisType | null = null;
 
 export function getDb(): pg.Pool {
   if (!_pg) _pg = createPostgresPool();
-  // The in-memory development adapter implements the query/connect surface used
-  // by application services while production services are typed against pg.Pool.
   return _pg as unknown as pg.Pool;
 }
 
@@ -452,6 +485,14 @@ export function getRedis(): RedisType {
 }
 
 export async function closeConnections(): Promise<void> {
-  if (_pg) { await _pg.end(); _pg = null; }
+  if (_pg) {
+    if (isSqlite) {
+      await (_pg as unknown as SqlitePool).end();
+    } else {
+      await _realPg?.end();
+    }
+    _pg = null;
+    _realPg = null;
+  }
   if (_rd) { await _rd.quit(); _rd = null; }
 }

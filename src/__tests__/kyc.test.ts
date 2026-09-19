@@ -387,6 +387,10 @@ describe('KYC submit survives audit-log failure (regression: no 500, no duplicat
     } finally {
       spy.mockRestore();
       await app.close();
+      // Close the DB pool so a real PostgreSQL pool doesn't keep the worker
+      // event loop alive after the test (SQLite adapter is a no-op).
+      const { closeConnections } = await import('../db/index.js');
+      await closeConnections();
     }
   });
 });
