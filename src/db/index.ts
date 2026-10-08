@@ -5,6 +5,7 @@ import { Redis } from 'ioredis';
 import type { Redis as RedisType } from 'ioredis';
 import { EventEmitter } from 'events';
 import { config } from '../config/index.js';
+import { createInMemoryRedis } from './in-memory-redis.js';
 import bcrypt from 'bcryptjs';
 
 // ── Persistence backend selection ─────────────────
@@ -125,31 +126,43 @@ CREATE TABLE IF NOT EXISTS orders (
     id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     pair            TEXT NOT NULL,
-    side            TEXT NOT NULL,
-    order_type      TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'PENDING',
+    side            TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    order_type      TEXT NOT NULL CHECK (order_type IN ('LIMIT', 'MARKET', 'STOP_LIMIT', 'STOP_MARKET')),
+    status          TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK (status IN ('PENDING', 'OPEN', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED')),
     price           TEXT,
     stop_price      TEXT,
     quantity        TEXT NOT NULL,
     filled_quantity TEXT NOT NULL DEFAULT '0',
-    filled_cost     TEXT NOT NULL DEFAULT '0',
-    fee             TEXT NOT NULL DEFAULT '0',
+    quote_quantity  TEXT,
+    filled_quote_quantity TEXT NOT NULL DEFAULT '0',
     fee_asset       TEXT,
+    fee_amount      TEXT NOT NULL DEFAULT '0',
+    fee_currency    TEXT,
+    client_order_id TEXT,
+    is_maker        INTEGER,
+    time_in_force   TEXT DEFAULT 'GTC' CHECK (time_in_force IN ('GTC', 'IOC', 'FOK', 'GTD')),
+    expires_at      TEXT,
+    reject_reason   TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS trades (
     id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
-    order_id        TEXT NOT NULL,
-    maker_order_id  TEXT,
     pair            TEXT NOT NULL,
-    side            TEXT NOT NULL,
+    buyer_order_id  TEXT NOT NULL,
+    seller_order_id TEXT NOT NULL,
+    buyer_user_id   TEXT NOT NULL,
+    seller_user_id  TEXT NOT NULL,
     price           TEXT NOT NULL,
     quantity        TEXT NOT NULL,
-    fee             TEXT NOT NULL DEFAULT '0',
-    fee_asset       TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    quote_quantity  TEXT NOT NULL,
+    buyer_fee       TEXT NOT NULL DEFAULT '0',
+    seller_fee      TEXT NOT NULL DEFAULT '0',
+    fee_asset       TEXT NOT NULL,
+    taker_side      TEXT NOT NULL CHECK (taker_side IN ('BUY', 'SELL')),
+    trade_time      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -241,16 +254,22 @@ CREATE TABLE IF NOT EXISTS password_resets (
 );
 
 CREATE TABLE IF NOT EXISTS supported_coins (
-    id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
-    symbol          TEXT NOT NULL UNIQUE,
-    name            TEXT NOT NULL,
-    network         TEXT NOT NULL,
-    decimals        INTEGER NOT NULL DEFAULT 18,
-    is_active       INTEGER NOT NULL DEFAULT 1,
-    min_deposit     TEXT NOT NULL DEFAULT '0',
-    min_withdrawal  TEXT NOT NULL DEFAULT '0',
-    withdrawal_fee  TEXT NOT NULL DEFAULT '0',
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    id                      TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+    asset                   TEXT NOT NULL UNIQUE,
+    name                    TEXT NOT NULL,
+    network                 TEXT NOT NULL,
+    is_active               INTEGER NOT NULL DEFAULT 1,
+    min_deposit_amount      TEXT NOT NULL DEFAULT '0',
+    min_withdrawal_amount   TEXT NOT NULL DEFAULT '0',
+    withdrawal_fee          TEXT NOT NULL DEFAULT '0',
+    withdrawal_fee_type     TEXT NOT NULL DEFAULT 'FIXED' CHECK (withdrawal_fee_type IN ('FIXED', 'PERCENT')),
+    required_confirmations  INTEGER NOT NULL DEFAULT 1,
+    deposit_enabled         INTEGER NOT NULL DEFAULT 1,
+    withdrawal_enabled      INTEGER NOT NULL DEFAULT 1,
+    withdrawal_requires_2fa INTEGER NOT NULL DEFAULT 1,
+    min_confirmations       INTEGER NOT NULL DEFAULT 1,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS staking_positions (
@@ -286,7 +305,9 @@ CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens (user_id);
 CREATE INDEX IF NOT EXISTS idx_wallets_user ON wallets (user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_user ON orders (user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
-CREATE INDEX IF NOT EXISTS idx_trades_order ON trades (order_id);
+CREATE INDEX IF NOT EXISTS idx_orders_pair_status ON orders (pair, status);
+CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades (pair);
+CREATE INDEX IF NOT EXISTS idx_trades_trade_time ON trades (trade_time);
 CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions (user_id);
 CREATE INDEX IF NOT EXISTS idx_kyc_docs_user ON kyc_documents (user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs (user_id);
@@ -308,23 +329,17 @@ VALUES ('pair_adausdt', 'ADA', 'USDT', 'ADAUSDT');
 INSERT OR IGNORE INTO trading_pairs (id, base_asset, quote_asset, symbol) 
 VALUES ('pair_avaxusdt', 'AVAX', 'USDT', 'AVAXUSDT');
 
-INSERT OR IGNORE INTO supported_coins (id, symbol, name, network, decimals)
-VALUES ('coin_btc', 'BTC', 'Bitcoin', 'BITCOIN', 8);
-
-INSERT OR IGNORE INTO supported_coins (id, symbol, name, network, decimals)
-VALUES ('coin_eth', 'ETH', 'Ethereum', 'ETHEREUM', 18);
-
-INSERT OR IGNORE INTO supported_coins (id, symbol, name, network, decimals)
-VALUES ('coin_usdt', 'USDT', 'Tether', 'ETHEREUM', 6);
-
-INSERT OR IGNORE INTO supported_coins (id, symbol, name, network, decimals)
-VALUES ('coin_sol', 'SOL', 'Solana', 'SOLANA', 9);
-
-INSERT OR IGNORE INTO supported_coins (id, symbol, name, network, decimals)
-VALUES ('coin_ada', 'ADA', 'Cardano', 'CARDANO', 6);
-
-INSERT OR IGNORE INTO supported_coins (id, symbol, name, network, decimals)
-VALUES ('coin_avax', 'AVAX', 'Avalanche', 'AVALANCHE', 18);
+INSERT OR IGNORE INTO supported_coins
+    (id, asset, name, network, min_deposit_amount, min_withdrawal_amount, withdrawal_fee, required_confirmations)
+VALUES
+    ('coin_btc',  'BTC',  'Bitcoin',  'BTC',       0.0001, 0.001, 0.0005, 2),
+    ('coin_eth',  'ETH',  'Ethereum', 'ETH_ERC20', 0.001,  0.01,  0.01,   12),
+    ('coin_usdt', 'USDT', 'Tether',   'ERC20',     1,      5,     1,      12),
+    ('coin_usdc', 'USDC', 'USD Coin', 'ERC20',     1,      5,     1,      12),
+    ('coin_sol',  'SOL',  'Solana',   'SOL',       0.01,   0.1,   0.01,   1),
+    ('coin_ada',  'ADA',  'Cardano',  'ADA',       1,      5,     0.5,    2),
+    ('coin_xrp',  'XRP',  'Ripple',   'XRP',       1,      5,     0.25,   2),
+    ('coin_dot',  'DOT',  'Polkadot', 'DOT',       0.1,    1,     0.1,    2);
 `;
 
 let sqlite: DatabaseSync | null = null;
@@ -382,37 +397,91 @@ function fixDates(rows: any[]): any[] {
   return rows;
 }
 
+// ── PostgreSQL → SQLite statement translation ────
+/**
+ * Coerce a parameter into a value node:sqlite can bind.
+ * PostgreSQL accepts Date and boolean parameters; SQLite only understands
+ * null, number, bigint, string and Uint8Array.
+ */
+export function toSqliteBindable(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  return value;
+}
+// The application is written against PostgreSQL and the SQLite adapter must
+// accept the very same statements, without the PostgreSQL code path changing
+// behaviour. Anything PostgreSQL-specific that SQLite cannot parse is rewritten
+// here; everything else is passed through untouched.
+export function translateSqlForSqlite(sql: string): string {
+  let s = sql;
+
+  // 1. Row-level locks. SQLite has no FOR UPDATE/FOR SHARE (it serialises
+  //    writers), so the locking clause is simply dropped. PostgreSQL keeps it —
+  //    this only ever runs on the SQLite adapter.
+  s = s.replace(/\s+FOR\s+(?:UPDATE|SHARE|NO\s+KEY\s+UPDATE)(?:\s+OF\s+[\w".]+)?(?:\s+(?:NOWAIT|SKIP\s+LOCKED))?/gi, '');
+
+  // 2. NOW() [+-] INTERVAL 'N unit(s)' → datetime('now', '[+-]N units')
+  //    Covers every duration form used by the codebase (minutes, hours, days …),
+  //    not just the single `+ N minutes` form the adapter used to special-case.
+  s = s.replace(
+    /\bNOW\(\)\s*([+-])\s*INTERVAL\s*'(\d+)\s*(SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?'/gi,
+    (_match, sign: string, amount: string, unit: string) =>
+      `datetime('now', '${sign}${amount} ${unit.toLowerCase()}s')`,
+  );
+
+  // 3. Bare NOW() → datetime('now')
+  s = s.replace(/\bNOW\(\)/gi, "datetime('now')");
+
+  // 4. GREATEST/LEAST → SQLite's scalar MAX/MIN (same semantics for >= 2 args).
+  s = s.replace(/\bGREATEST\s*\(/gi, 'MAX(');
+  s = s.replace(/\bLEAST\s*\(/gi, 'MIN(');
+
+  // 5. ILIKE → LIKE (SQLite's LIKE is already case-insensitive for ASCII).
+  s = s.replace(/\bILIKE\b/gi, 'LIKE');
+
+  // 6. ON CONFLICT … DO NOTHING is redundant for the idempotent inserts we run
+  //    in the dev adapter.
+  s = s.replace(/\bON\s+CONFLICT\s*\([^)]+\)\s*DO\s+NOTHING/gi, '');
+
+  return s;
+}
+
 class SqlitePool extends EventEmitter {
   query(sql: string, params?: any[]): Promise<any> {
     try {
       const db = getSqlite();
-      let s = sql;
+      let s = translateSqlForSqlite(sql);
 
-      // Translate PG functions to SQLite
-      s = s.replace(/\bNOW\(\)\s*\+\s*INTERVAL\s*'(\d+)\s*minutes'/gi, "datetime('now', '+$1 minutes')");
-      s = s.replace(/\bNOW\(\)/gi, "datetime('now')");
-      // Strip PG ON CONFLICT — SQLite handles it but we just remove for simplicity
-      s = s.replace(/\bON\s+CONFLICT\s*\([^)]+\)\s*DO\s+NOTHING/gi, '');
-
-      // Convert $1..$N → ? placeholders and fix param types
-      if (params && params.length > 0) {
-        s = s.replace(/\$\d+/g, '?');
-        // Convert Date objects to ISO strings for SQLite
-        params = params.map((p: any) => p instanceof Date ? p.toISOString() : p);
+      // Convert $1..$N → ? placeholders.
+      //
+      // The PostgreSQL driver lets a statement reference the same parameter
+      // more than once (e.g. `... WHERE pair = $1 ... AND pair = $1`), while
+      // SQLite only has positional `?` — so each occurrence gets its own
+      // placeholder and the bound values are ordered accordingly. Without this
+      // expansion a repeated $1 silently binds as NULL and the query returns
+      // empty results instead of erroring.
+      const usesPlaceholders = /\$\d+/.test(s);
+      const bound: unknown[] = [];
+      if (usesPlaceholders) {
+        s = s.replace(/\$(\d+)/g, (_match, index: string) => {
+          bound.push(toSqliteBindable((params ?? [])[Number(index) - 1]));
+          return '?';
+        });
       }
 
-      const isSelect = /^\s*SELECT/i.test(s);
+      const isSelect = /^\s*(SELECT|WITH|PRAGMA)/i.test(s);
       if (isSelect) {
         const stmt = db.prepare(s);
-        const rows = params ? stmt.all(...params) : stmt.all();
-        return Promise.resolve({ rows: fixDates(rows), rowCount: rows.length });
+        const rows = usesPlaceholders ? stmt.all(...(bound as any[])) : stmt.all();
+        return Promise.resolve({ rows: fixDates(rows as any[]), rowCount: rows.length });
       }
 
       // For INSERT/UPDATE/DELETE — SQLite supports RETURNING natively since 3.35
       const stmt = db.prepare(s);
-      const rows = params ? stmt.all(...params) : stmt.all();
+      const rows = usesPlaceholders ? stmt.all(...(bound as any[])) : stmt.all();
       if (rows.length > 0) {
-        return Promise.resolve({ rows: fixDates(rows), rowCount: rows.length });
+        return Promise.resolve({ rows: fixDates(rows as any[]), rowCount: rows.length });
       }
       return Promise.resolve({ rows: [], rowCount: 1 });
     } catch (err: any) {
@@ -456,12 +525,11 @@ export function createPostgresPool(): pg.Pool {
 
 export function createRedisClient(): RedisType {
   if (!config.REDIS_URL) {
-    console.warn('[Redis] No REDIS_URL, using mock');
-    const m = new EventEmitter() as unknown as RedisType;
-    (m as any).ping = async () => 'PONG';
-    (m as any).quit = async () => 'OK';
-    (m as any).on = () => m;
-    return m;
+    console.warn(
+      '[Redis] No REDIS_URL — using the in-process Redis stand-in (dev/test only). ' +
+        'Order books live in this process only; production requires a real Redis.',
+    );
+    return createInMemoryRedis() as unknown as RedisType;
   }
   const c = new Redis(config.REDIS_URL, {
     maxRetriesPerRequest: 3,
