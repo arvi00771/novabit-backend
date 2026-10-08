@@ -6,8 +6,9 @@
  * turned core endpoints into 500s on the dev backend:
  *
  *   1. SQLite could not parse `FOR UPDATE` / `NOW() - INTERVAL '24 hours'`.
- *   2. The SQLite schema for `orders`, `trades` and `supported_coins` had drifted
- *      from the migrations, so inserts/selects hit "no such column".
+ *   2. The SQLite schema for `orders`, `trades`, `supported_coins` and the
+ *      staking tables (`stakes`/`staking_products`/`staking_rewards`) had
+ *      drifted from the migrations, so inserts/selects hit "no such column".
  *   3. Reused `$1` placeholders were all collapsed onto one `?`, silently
  *      binding NULL and returning empty aggregates.
  *   4. The Redis "mock" only had ping/quit, so every order-book call threw
@@ -247,5 +248,87 @@ describe('dev backend endpoints against the in-memory adapters', () => {
     expect(info.asset).toBe('BTC');
     expect(info.min_deposit_amount).toBe('0.0001');
     expect(typeof info.address).toBe('string');
+  });
+
+  // ── Staking (migration 008: staking_products / stakes / staking_rewards) ──
+  it('GET /staking/products returns the seeded migration-008 products', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/staking/products', headers: auth() });
+
+    expect(res.statusCode).toBe(200);
+    const products = res.json().data as Record<string, unknown>[];
+    expect(products.length).toBe(6);
+    expect(products.map((p) => p.asset)).toEqual(
+      expect.arrayContaining(['ETH', 'SOL', 'ADA', 'DOT', 'AVAX', 'USDT']),
+    );
+    expect(typeof products[0].id).toBe('string');
+  });
+
+  it('stake → positions → unstake works end to end on the dev schema', async () => {
+    const { getDb } = await import('../db/index.js');
+    const db = getDb();
+    const email = 'arvi00772@gmail.com';
+
+    // Fund an ETH spot wallet so the stake can be covered.
+    await db.query(
+      `DELETE FROM wallets WHERE asset = 'ETH' AND user_id = (SELECT id FROM users WHERE email = $1)`,
+      [email],
+    );
+    await db.query(
+      `INSERT INTO wallets (id, user_id, asset, wallet_type, balance, locked_balance, is_active)
+       VALUES ('w_test_eth', (SELECT id FROM users WHERE email = $1), 'ETH', 'SPOT', '5', '0', 1)`,
+      [email],
+    );
+
+    const products = (
+      await app.inject({ method: 'GET', url: '/api/v1/staking/products', headers: auth() })
+    ).json().data as Record<string, unknown>[];
+    const ethFlexible = products.find((p) => p.asset === 'ETH' && p.lock_period_days === 0);
+    expect(ethFlexible).toBeDefined();
+
+    const stake = await app.inject({
+      method: 'POST',
+      url: '/api/v1/staking/stake',
+      headers: auth(),
+      payload: { product_id: ethFlexible!.id, amount: '1' },
+    });
+    expect(stake.statusCode).toBe(201);
+    const stakeBody = stake.json().data;
+    expect(stakeBody.status).toBe('ACTIVE');
+    expect(stakeBody.asset).toBe('ETH');
+    expect(stakeBody.apy_at_stake).toBe('4.5');
+
+    // The stake locks the balance and shows up in the position list.
+    const positions = await app.inject({
+      method: 'GET',
+      url: '/api/v1/staking/positions',
+      headers: auth(),
+    });
+    expect(positions.statusCode).toBe(200);
+    const positionList = positions.json().data as Record<string, unknown>[];
+    expect(positionList.some((p) => p.id === stakeBody.id && p.status === 'ACTIVE')).toBe(true);
+
+    // Flexible stake: unstaking completes immediately and releases the balance.
+    const unstake = await app.inject({
+      method: 'POST',
+      url: '/api/v1/staking/unstake',
+      headers: auth(),
+      payload: { stake_id: stakeBody.id },
+    });
+    expect(unstake.statusCode).toBe(200);
+    expect(unstake.json().data.status).toBe('COMPLETED');
+
+    const after = (
+      await app.inject({ method: 'GET', url: '/api/v1/staking/positions', headers: auth() })
+    ).json().data as Record<string, unknown>[];
+    expect(after.find((p) => p.id === stakeBody.id)?.status).toBe('COMPLETED');
+
+    // Reward history endpoint uses the staking_rewards table.
+    const rewards = await app.inject({
+      method: 'GET',
+      url: '/api/v1/staking/rewards',
+      headers: auth(),
+    });
+    expect(rewards.statusCode).toBe(200);
+    expect(Array.isArray(rewards.json().data)).toBe(true);
   });
 });

@@ -272,19 +272,46 @@ CREATE TABLE IF NOT EXISTS supported_coins (
     updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS staking_positions (
+-- Staking model mirrors migration 008 (staking_products / stakes / staking_rewards).
+CREATE TABLE IF NOT EXISTS staking_products (
+    id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+    asset           TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    apy             TEXT NOT NULL DEFAULT '0',
+    min_stake       TEXT NOT NULL DEFAULT '0',
+    lock_period_days INTEGER NOT NULL DEFAULT 0,
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (asset, lock_period_days)
+);
+
+CREATE TABLE IF NOT EXISTS stakes (
     id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
     user_id         TEXT NOT NULL REFERENCES users(id),
-    wallet_id       TEXT NOT NULL REFERENCES wallets(id),
+    product_id      TEXT NOT NULL REFERENCES staking_products(id),
     asset           TEXT NOT NULL,
-    amount          TEXT NOT NULL,
-    apy             TEXT NOT NULL,
+    amount          TEXT NOT NULL DEFAULT '0',
+    apy_at_stake    TEXT NOT NULL DEFAULT '0',
+    status          TEXT NOT NULL DEFAULT 'ACTIVE'
+                    CHECK (status IN ('ACTIVE', 'UNSTAKING', 'COMPLETED', 'CANCELED')),
     start_date      TEXT NOT NULL DEFAULT (datetime('now')),
     end_date        TEXT,
-    status          TEXT NOT NULL DEFAULT 'ACTIVE',
-    rewards_earned  TEXT NOT NULL DEFAULT '0',
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS staking_rewards (
+    id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+    stake_id        TEXT NOT NULL REFERENCES stakes(id),
+    user_id         TEXT NOT NULL REFERENCES users(id),
+    asset           TEXT NOT NULL,
+    amount          TEXT NOT NULL DEFAULT '0',
+    period_start    TEXT NOT NULL,
+    period_end      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PAID')),
+    paid_at         TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -311,6 +338,12 @@ CREATE INDEX IF NOT EXISTS idx_trades_trade_time ON trades (trade_time);
 CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions (user_id);
 CREATE INDEX IF NOT EXISTS idx_kyc_docs_user ON kyc_documents (user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs (user_id);
+CREATE INDEX IF NOT EXISTS idx_staking_products_asset ON staking_products (asset);
+CREATE INDEX IF NOT EXISTS idx_stakes_user_id ON stakes (user_id);
+CREATE INDEX IF NOT EXISTS idx_stakes_product_id ON stakes (product_id);
+CREATE INDEX IF NOT EXISTS idx_stakes_user_status ON stakes (user_id, status);
+CREATE INDEX IF NOT EXISTS idx_staking_rewards_stake_id ON staking_rewards (stake_id);
+CREATE INDEX IF NOT EXISTS idx_staking_rewards_user_id ON staking_rewards (user_id);
 `;
 
 const SEED = `
@@ -340,6 +373,15 @@ VALUES
     ('coin_ada',  'ADA',  'Cardano',  'ADA',       1,      5,     0.5,    2),
     ('coin_xrp',  'XRP',  'Ripple',   'XRP',       1,      5,     0.25,   2),
     ('coin_dot',  'DOT',  'Polkadot', 'DOT',       0.1,    1,     0.1,    2);
+
+-- Default staking products, mirroring migration 008 seed rows.
+INSERT OR IGNORE INTO staking_products (asset, name, apy, min_stake, lock_period_days) VALUES
+    ('ETH',  'ETH Flexible Staking',   4.5, 0.1,  0),
+    ('SOL',  'SOL Flexible Staking',   6.0, 1,    0),
+    ('ADA',  'ADA Flexible Staking',   3.5, 50,   0),
+    ('DOT',  'DOT 28-Day Staking',     8.0, 10,   28),
+    ('AVAX', 'AVAX 14-Day Staking',    7.0, 1,    14),
+    ('USDT', 'USDT Flexible Staking',  3.0, 100,  0);
 `;
 
 let sqlite: DatabaseSync | null = null;
